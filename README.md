@@ -25,13 +25,13 @@ Point your HTTPS reverse proxy or Cloudflare Tunnel at `http://127.0.0.1:8000`. 
 Use an Ubuntu image with a working NVIDIA driver and CUDA-enabled PyTorch. Keep the image's GPU build visible if you create a virtual environment. The commands below use the image's Python, with PyTorch 2.8 or newer. Installation examples for hosts without PyTorch appear below.
 
 ```bash
-python -m pip install -r requirements.txt
-python -c 'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))'
+python3 -m pip install -r requirements.txt
+python3 -c 'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))'
 export CHECKPOINT_URL=https://chkpt.linush.org
 read -rsp 'Checkpoint token: ' CHECKPOINT_TOKEN && echo
 export CHECKPOINT_TOKEN
 set -o pipefail
-python -u train.py --seconds 3300 2>&1 | tee pilot.log
+python3 -u train.py --seconds 3300 2>&1 | tee pilot.log
 ```
 
 Use the subdomain you configured. Enter the same token as on the persistent host. The 55-minute pilot leaves five minutes of a one-hour rental for final transfer and inspection, subject to setup time and link speed. The wall-time option is honored between work units. A successful final upload is acknowledged in the log before process exit.
@@ -48,9 +48,9 @@ For a host without a working PyTorch installation, these are example PyTorch 2.8
 
 ```bash
 # A modern rental image, including Blackwell
-python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+python3 -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 # A separate environment for the home P40
-python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu126
+python3 -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu126
 ```
 
 [PyTorch wheel list](https://pytorch.org/get-started/previous-versions/) · [PyTorch architecture support](https://dev-discuss.pytorch.org/t/cuda-toolkit-version-and-architecture-support-update-maxwell-and-pascal-architecture-support-removed-in-cuda-12-8-and-12-9-builds/3128) · [Blackwell build guidance](https://discuss.pytorch.org/t/pytorch-support-for-sm-120/222119) · [NVIDIA legacy GPU list](https://developer.nvidia.com/cuda/gpus/legacy)
