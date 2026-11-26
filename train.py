@@ -78,15 +78,15 @@ def arguments():
 RECIPE = {
     "width": 96,
     "blocks": 8,
-    "batch": 256,
-    "visits": 64,
+    "batch": 512,
+    "visits": 192,
     "plies": 192,
-    "capacity": 500000,
-    "warm_rows": 1024,
+    "capacity": 2000000,
+    "warm_rows": 8192,
     "reuse": 4,
     "seed": 1234,
-    "lr": 0.04,
-    "decay_steps": 30000,
+    "lr": 0.05,
+    "decay_steps": 300000,
 }
 
 
