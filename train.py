@@ -76,17 +76,17 @@ def arguments():
 
 
 RECIPE = {
-    "width": 96,
+    "width": 128,
     "blocks": 10,
     "batch": 512,
-    "visits": 192,
+    "visits": 128,
     "plies": 192,
     "capacity": 1000000,
     "warm_rows": 4096,
     "reuse": 4,
     "seed": 1234,
     "lr": 0.05,
-    "decay_steps": 400000,
+    "decay_steps": 500000,
 }
 
 
