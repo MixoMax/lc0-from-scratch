@@ -1,0 +1,6 @@
+# Install a CUDA-compatible PyTorch build separately using the host image.
+chess==1.11.2
+numpy>=1.26,<3
+psutil>=5.9,<8
+httpx[socks]>=0.27,<1
+nvidia-ml-py>=12
