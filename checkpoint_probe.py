@@ -14,8 +14,8 @@ def request_for(board):
     return encode(board, 1), move_ids(board, list(board.legal_moves))
 
 
-def search_value(board, predict, batch, visits):
-    """Score UCI's selected move by its mean backed-up W-L, from this root's side."""
+def search_position(board, predict, batch, visits):
+    """Return the position score, UCI move and root statistics from one search."""
     from inference import visit, visit_batch
     from search import Node, key
 
@@ -29,7 +29,7 @@ def search_value(board, predict, batch, visits):
     step = visit(scratch, counts, root)
     request = next(step, None)
     if request is None:
-        return float(root.terminal)
+        return float(root.terminal), None, root
     try:
         step.send(predict([request])[0])
     except StopIteration:
@@ -38,7 +38,7 @@ def search_value(board, predict, batch, visits):
     # UCI returns a forced move immediately. Use the root network evaluation
     # for its position, since there are no backed-up visits in this case.
     if len(root.moves) == 1:
-        return float(root.v)
+        return float(root.v), root.moves[0], root
 
     edges = range(len(root.moves))
     unvisited = deque(sorted(edges, key=root.prior.__getitem__, reverse=True))
@@ -46,9 +46,9 @@ def search_value(board, predict, batch, visits):
         size = min(batch, visits - root.total)
         mate = visit_batch(scratch, counts, root, predict, unvisited, size)
         if mate is not None:
-            return 1.0
+            return 1.0, root.moves[mate], root
     best = max(edges, key=lambda i: (root.n[i], root.w[i], root.prior[i]))
-    return float(root.w[best] / root.n[best])
+    return float(root.w[best] / root.n[best]), root.moves[best], root
 
 
 def evaluate_moves(predict, board, batch, visits):
@@ -63,12 +63,17 @@ def evaluate_moves(predict, board, batch, visits):
               f"W-L {value:+.4f}. No moves to play.")
         return
 
+    best = None
+    root_stats = {}
     if visits is None:
         (_, baseline), = predict([request_for(board)])
         before = float(baseline)
     else:
         print(f"Search: up to {visits} visits per position, batch size {batch}")
-        before = search_value(board, predict, batch, visits)
+        before, best, root = search_position(board, predict, batch, visits)
+        if root.moves is not None:
+            for move, n, w in zip(root.moves, root.n, root.w):
+                root_stats[move] = (int(n), f"{w / n:+.4f}" if n else "-")
     moves = list(board.legal_moves)
     scores = {}
     requests = []
@@ -78,7 +83,8 @@ def evaluate_moves(predict, board, batch, visits):
         child.push(move)
         outcome = child.outcome()
         if outcome is None and visits is not None:
-            scores[move] = -search_value(child, predict, batch, visits), ""
+            child_value, _, _ = search_position(child, predict, batch, visits)
+            scores[move] = -child_value, ""
         elif outcome is None:
             pending.append(move)
             requests.append(request_for(child))
@@ -92,12 +98,20 @@ def evaluate_moves(predict, board, batch, visits):
             # The child value head sees the opponent as the side to move.
             scores[move] = -float(value), ""
 
-    print(f"{len(moves)} legal moves")
-    print(f"{'Move':<9} {'UCI':<6} {'Before':>9} {'After':>9} {'Change':>9}")
+    choice = ""
+    if visits is not None:
+        choice = (f" | UCI bestmove {best.uci()} ({board.san(best)})"
+                  if best is not None else " | terminal search root")
+    print(f"{len(moves)} legal moves{choice}")
+    extra = f" {'Root N':>7} {'Root Q':>9}" if visits is not None else ""
+    print(f"{'Move':<9} {'UCI':<6} {'Before':>9} {'After':>9} {'Change':>9}{extra}")
     for move in sorted(moves, key=lambda m: (-scores[m][0], m.uci())):
         after, note = scores[move]
+        if visits is not None:
+            n, q = root_stats.get(move, (0, "-"))
+            extra = f" {n:7d} {q:>9}"
         print(f"{board.san(move):<9} {move.uci():<6} {before:+9.4f} "
-              f"{after:+9.4f} {after - before:+9.4f}  {note}".rstrip())
+              f"{after:+9.4f} {after - before:+9.4f}{extra}  {note}".rstrip())
 
 
 def main():
