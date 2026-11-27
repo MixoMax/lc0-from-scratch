@@ -6,7 +6,7 @@ import os
 import select
 import sys
 import time
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 
 import chess
@@ -77,7 +77,7 @@ def load_predictor(args):
     net = ChessNet(**architecture)
     net.load_state_dict(state["model"])
     predictor = Predictor(net.eval().to(device, memory_format=torch.channels_last), device, dtype)
-    # Exercise the actual batch-one path before announcing UCI readiness.
+    # Warm the root evaluation before announcing UCI readiness.
     from encoding import encode, move_ids
     board = chess.Board()
     predictor([(encode(board, 1), move_ids(board, list(board.legal_moves)))])
@@ -85,10 +85,12 @@ def load_predictor(args):
 
 
 MAX_THREADS = 128
+DEFAULT_BATCH_SIZE = 8
+MAX_BATCH_SIZE = 128
 
 
-def simulations(board, predict):
-    from inference import visit
+def simulations(board, predict, batch_size=DEFAULT_BATCH_SIZE, node_limit=None, deadline=None):
+    from inference import visit, visit_batch
     from search import Node, key
 
     # Rebuild counts from the actual game history, including a custom FEN root.
@@ -98,22 +100,46 @@ def simulations(board, predict):
         scratch.push(move)
         counts[key(scratch)] += 1
     root = Node()
-    while True:
-        step = visit(scratch, counts, root)
-        try:
-            request = next(step)
-            step.send(predict([request])[0])
-        except StopIteration as done:
-            if not done.value:
+    start = time.monotonic()
+    step = visit(scratch, counts, root)
+    request = next(step, None)
+    if request is None:
+        return
+    try:
+        step.send(predict([request])[0])
+    except StopIteration:
+        pass
+    seconds_per_visit = time.monotonic() - start
+    unvisited = deque(sorted(range(len(root.moves)), key=root.prior.__getitem__, reverse=True))
+    yield root.moves[unvisited[0]], 0
+
+    while node_limit is None or root.total < node_limit:
+        size = batch_size if node_limit is None else min(batch_size, node_limit - root.total)
+        start = time.monotonic()
+        if deadline is not None:
+            remaining = deadline - start
+            if remaining <= 0:
                 return
-        scores = root.n if root.total else root.prior
-        yield root.moves[int(scores.argmax())], root.total
+            # Leave time for the UCI loop to publish a move. One forward pass is indivisible.
+            size = min(size, max(1, int(remaining / (2 * max(seconds_per_visit, 1e-6)))))
+        before = root.total
+        mate = visit_batch(scratch, counts, root, predict, unvisited, size)
+        if mate is not None:
+            yield root.moves[mate], root.total
+            return
+        seconds_per_visit = (time.monotonic() - start) / (root.total - before)
+        # During initial coverage many moves tie on visits. Compare their mean values
+        # (equivalently their sums for equal counts), then break remaining ties by prior.
+        best = max(range(len(root.moves)), key=lambda i: (root.n[i], root.w[i], root.prior[i]))
+        yield root.moves[best], root.total
 
 
 def protocol(config):
     board = chess.Board()
     predict = search = None
     active = False
+    batch_size = DEFAULT_BATCH_SIZE
+    started = None
     deadline = node_limit = None
     best, nodes = "0000", 0
     fd = sys.stdin.fileno()
@@ -127,7 +153,9 @@ def protocol(config):
     def finish():
         nonlocal active, search
         if active:
-            print(f"info nodes {nodes}\nbestmove {best}", flush=True)
+            elapsed = max(time.monotonic() - started, 1e-9)
+            print(f"info nodes {nodes} time {int(1000 * elapsed)} nps {int(nodes / elapsed)}"
+                  f"\nbestmove {best}", flush=True)
         active, search = False, None
 
     while True:
@@ -167,19 +195,27 @@ def protocol(config):
                 return 0
             if cmd == "uci":
                 print("id name lc0-from-scratch", flush=True)
-                print(f"option name Threads type spin default 1 min 1 max {MAX_THREADS}\nuciok", flush=True)
+                print(f"option name Threads type spin default 1 min 1 max {MAX_THREADS}")
+                print(f"option name BatchSize type spin default {DEFAULT_BATCH_SIZE} min 1 max {MAX_BATCH_SIZE}\nuciok", flush=True)
             elif cmd == "setoption":
-                if len(args) != 4 or [w.lower() for w in args[:3]] != ["name", "threads", "value"]:
-                    raise ValueError("expected name Threads value N")
+                if len(args) != 4 or args[0].lower() != "name" or args[2].lower() != "value":
+                    raise ValueError("expected name Threads or BatchSize followed by value N")
+                option = args[1].lower()
+                if option not in ("threads", "batchsize"):
+                    raise ValueError(f"unknown option {args[1]}")
                 n = int(args[3])
-                if not 1 <= n <= MAX_THREADS:
-                    raise ValueError(f"Threads must be 1..{MAX_THREADS}")
+                maximum = MAX_THREADS if option == "threads" else MAX_BATCH_SIZE
+                if not 1 <= n <= maximum:
+                    raise ValueError(f"{args[1]} must be 1..{maximum}")
                 if active:
-                    raise ValueError("stop search before changing Threads")
-                if predict is not None and n != config.threads:
-                    import torch
-                    torch.set_num_threads(n)
-                config.threads = n
+                    raise ValueError(f"stop search before changing {args[1]}")
+                if option == "batchsize":
+                    batch_size = n
+                else:
+                    if predict is not None and n != config.threads:
+                        import torch
+                        torch.set_num_threads(n)
+                    config.threads = n
             elif cmd == "isready":
                 initialize()
                 print("readyok", flush=True)
@@ -190,9 +226,10 @@ def protocol(config):
                 finish()
                 board = new_board
             elif cmd == "go":
-                started = time.monotonic()
+                received = time.monotonic()
                 seconds, node_limit = limits(args, board.turn)
                 finish()
+                started = received
                 moves = list(board.legal_moves)
                 best, nodes = moves[0].uci() if moves else "0000", 0
                 active = True
@@ -202,7 +239,7 @@ def protocol(config):
                         finish()
                 else:
                     initialize()
-                    search = simulations(board, predict)
+                    search = simulations(board, predict, batch_size, node_limit, deadline)
         except ValueError as exc:
             print(f"info string invalid {cmd}: {exc}", flush=True)
 

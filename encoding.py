@@ -1,3 +1,4 @@
+# file: encoding.py
 """The paper's side-to-move 52 planes, packed as 40 masks and 12 integers."""
 
 import struct

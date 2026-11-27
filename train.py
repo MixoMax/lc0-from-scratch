@@ -76,8 +76,8 @@ def arguments():
 
 
 RECIPE = {
-    "width": 128,
-    "blocks": 10,
+    "width": 96,
+    "blocks": 8,
     "batch": 512,
     "visits": 128,
     "plies": 192,

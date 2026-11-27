@@ -26,9 +26,17 @@ class Node:
         self.children = {}
         self.v = v
 
-    def select(self):
-        q = np.divide(self.w, self.n, out=np.full_like(self.w, self.v - 0.2), where=self.n > 0)
-        return int(np.argmax(q + 1.5 * math.sqrt(1 + self.total) * self.prior / (1 + self.n)))
+    def select(self, in_flight=None, blocked=None):
+        n, w, total = self.n, self.w, self.total
+        if in_flight is not None:
+            # A pending visit temporarily counts as a loss for its selecting player.
+            n, w = n + in_flight, w - in_flight
+            total += int(in_flight.sum())
+        q = np.divide(w, n, out=np.full_like(self.w, self.v - 0.2), where=n > 0)
+        scores = q + 1.5 * math.sqrt(1 + total) * self.prior / (1 + n)
+        if blocked:
+            scores[blocked] = -np.inf
+        return int(np.argmax(scores))
 
 
 def key(board):
