@@ -95,7 +95,7 @@ def recipe(args, state):
     for k in RECIPE:
         value = getattr(args, k)
         if value is not None:
-            if state and cfg[k] != value:
+            if state and cfg[k] != value and k != "visits":
                 raise ValueError(
                     f"--{k} changes a saved learning setting ({cfg[k]}); use a separate store for a new run"
                 )

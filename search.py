@@ -1,3 +1,4 @@
+# file: search.py
 """Independent CPU actors. Each game can have one outstanding neural evaluation."""
 
 import math

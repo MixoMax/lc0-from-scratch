@@ -1,4 +1,4 @@
-"""Neural inference and deterministic PUCT shared by match evaluation and UCI."""
+# file: inference.py
 
 from time import perf_counter
 
