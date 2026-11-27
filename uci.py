@@ -65,7 +65,7 @@ def load_predictor(args):
     from network import ChessNet
 
     torch.set_num_threads(args.threads)
-    torch.set_num_interop_threads(1)
+    torch.set_num_interop_threads(args.x_threads or 1)
     device, dtype = configure_device(args.device, "auto")
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if state.get("format") != 1:
@@ -138,7 +138,7 @@ def protocol(config):
     board = chess.Board()
     predict = search = None
     active = False
-    batch_size = DEFAULT_BATCH_SIZE
+    batch_size = config.x_batch or DEFAULT_BATCH_SIZE
     started = None
     deadline = node_limit = None
     best, nodes = "0000", 0
@@ -195,8 +195,8 @@ def protocol(config):
                 return 0
             if cmd == "uci":
                 print("id name lc0-from-scratch", flush=True)
-                print(f"option name Threads type spin default 1 min 1 max {MAX_THREADS}")
-                print(f"option name BatchSize type spin default {DEFAULT_BATCH_SIZE} min 1 max {MAX_BATCH_SIZE}\nuciok", flush=True)
+                print(f"option name Threads type spin default {config.x_threads or 1} min 1 max {MAX_THREADS}")
+                print(f"option name BatchSize type spin default {config.x_batch or DEFAULT_BATCH_SIZE} min 1 max {MAX_BATCH_SIZE}\nuciok", flush=True)
             elif cmd == "setoption":
                 if len(args) != 4 or args[0].lower() != "name" or args[2].lower() != "value":
                     raise ValueError("expected name Threads or BatchSize followed by value N")
@@ -207,6 +207,9 @@ def protocol(config):
                 maximum = MAX_THREADS if option == "threads" else MAX_BATCH_SIZE
                 if not 1 <= n <= maximum:
                     raise ValueError(f"{args[1]} must be 1..{maximum}")
+                if ((option == "threads" and config.x_threads is not None) or
+                        (option == "batchsize" and config.x_batch is not None)):
+                    continue
                 if active:
                     raise ValueError(f"stop search before changing {args[1]}")
                 if option == "batchsize":
@@ -228,13 +231,15 @@ def protocol(config):
             elif cmd == "go":
                 received = time.monotonic()
                 seconds, node_limit = limits(args, board.turn)
+                if config.x_visits is not None:
+                    seconds, node_limit = None, config.x_visits
                 finish()
                 started = received
                 moves = list(board.legal_moves)
                 best, nodes = moves[0].uci() if moves else "0000", 0
                 active = True
                 deadline = None if seconds is None else started + seconds
-                if len(moves) < 2 or seconds == 0:
+                if not moves or (len(moves) == 1 and config.x_visits is None) or seconds == 0:
                     if deadline is not None or node_limit is not None:
                         finish()
                 else:
@@ -249,10 +254,19 @@ def main():
     parser.add_argument("checkpoint", nargs="?", type=Path,
                         default=Path(__file__).resolve().with_name("student.pt"))
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--x-threads", type=int, help="Fix PyTorch thread counts and override UCI Threads (1..128)")
+    parser.add_argument("--x-batch", type=int, help="Fix the search batch size and override UCI BatchSize (1..128)")
+    parser.add_argument("--x-visits", type=int, help="PyTorch go nodes limit per position. Overrides UCI visits or movetime limits.")
     args = parser.parse_args()
     if not args.checkpoint.is_file():
         parser.error("supply an existing checkpoint")
-    args.threads = 1
+    if args.x_threads is not None and not 1 <= args.x_threads <= MAX_THREADS:
+        parser.error(f"--x-threads must be 1..{MAX_THREADS}")
+    if args.x_batch is not None and not 1 <= args.x_batch <= MAX_BATCH_SIZE:
+        parser.error(f"--x-batch must be 1..{MAX_BATCH_SIZE}")
+    if args.x_visits is not None and args.x_visits < 1:
+        parser.error("--x-visits must be positive")
+    args.threads = args.x_threads or 1
     # Set native-pool defaults before NumPy and PyTorch are imported.
     for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
                  "BLIS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
