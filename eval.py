@@ -32,14 +32,13 @@ from time import perf_counter
 
 try:
     import chess.engine
-    import numpy as np
     import torch
     from tqdm import tqdm
 
-    from encoding import N_ACTIONS, STATE_BYTES, encode, move_ids
-    from hardware import amp, configure_device, host_limits
-    from network import ChessNet, legal_logits
-    from search import Node, key, terminal_value
+    from inference import Predictor, visit
+    from hardware import configure_device, host_limits
+    from network import ChessNet
+    from search import Node, key
 except ImportError as exc:
     IMPORT_ERROR = str(exc)
 else:
@@ -185,38 +184,6 @@ def runtime(args):
     return device, dtype, info
 
 
-class Predictor:
-    def __init__(self, net, device, dtype):
-        self.net, self.device, self.dtype = net, device, dtype
-        self.seconds = 0.0
-        self.batches = self.positions = 0
-
-    def __call__(self, requests):
-        start = perf_counter()
-        states = bytearray().join(x for x, _ in requests)
-        ids = np.full((len(requests), max(len(a) for _, a in requests)), N_ACTIONS, dtype=np.int64)
-        for i, (_, actions) in enumerate(requests):
-            ids[i, :len(actions)] = actions
-        with torch.inference_mode(), amp(self.device, self.dtype):
-            x = torch.frombuffer(states, dtype=torch.uint8).reshape(-1, STATE_BYTES).to(self.device)
-            policy, value = self.net(x)
-            priors = legal_logits(policy, torch.from_numpy(ids).to(self.device)).softmax(1)
-            wdl = value.float().softmax(1)
-            # Blocking copy includes GPU completion in the measured interval.
-            out = torch.cat((priors, wdl[:, :1] - wdl[:, 2:3]), dim=1).cpu().numpy()
-        self.seconds += perf_counter() - start
-        self.batches += 1
-        self.positions += len(requests)
-        if not np.isfinite(out).all():
-            raise ValueError("network produced non-finite policy or value")
-        return [(row[:len(actions)], float(row[-1])) for row, (_, actions) in zip(out, requests)]
-
-    def timing(self):
-        return {"seconds": self.seconds, "positions": self.positions, "batches": self.batches,
-                "ms_per_position": 1000 * self.seconds / self.positions if self.positions else None,
-                "mean_batch_size": self.positions / self.batches if self.batches else None}
-
-
 class Match:
     def __init__(self, index, line, engine):
         self.index, self.engine = index, engine
@@ -275,39 +242,10 @@ class Match:
 
     def search(self, visits):
         """PUCT with the trainer's Node, encoding and value convention. Yield neural leaves."""
-        board, counts, root = self.board, self.counts, self.root
+        root = self.root
         while root.total < visits:
-            node, path = root, []
-            while node.moves is not None:
-                edge = node.select()
-                path.append((node, edge))
-                board.push(node.moves[edge])
-                counts[key(board)] += 1
-                if edge not in node.children:
-                    node.children[edge] = Node()
-                node = node.children[edge]
-            if node.terminal is None:
-                moves = list(board.legal_moves)
-                occurrences = counts[key(board)]
-                node.terminal = terminal_value(board, occurrences, moves)
-            if node.terminal is None:
-                actions = move_ids(board, moves)
-                prior, value = yield encode(board, occurrences), actions
-                node.expand(moves, actions, prior, value)
-            else:
-                if not path:
-                    raise ValueError("model search requested in a terminal position")
-                value = node.terminal
-            for parent, edge in reversed(path):
-                pos = key(board)
-                counts[pos] -= 1
-                if counts[pos] == 0:
-                    del counts[pos]
-                board.pop()
-                value = -value
-                parent.n[edge] += 1
-                parent.w[edge] += value
-                parent.total += 1
+            if not (yield from visit(self.board, self.counts, root)):
+                raise ValueError("model search requested in a terminal position")
         return root.moves[int(root.n.argmax())]
 
 

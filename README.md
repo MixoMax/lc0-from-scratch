@@ -1,4 +1,4 @@
-# Chess Zero
+# lc0-from-scratch
 
 Single-trainer, single-GPU chess self-play on interruptible Linux machines. Run the checkpoint service on the always-on host and launch `train.py` on whichever GPU you rent. All custom search, replay, and training code is Python. PyTorch runs the neural network and python-chess handles standard chess rules.
 
@@ -105,6 +105,48 @@ python distill.py --teacher-dir frozen-teacher --output student.pt --steps 20000
 ```
 
 Use the first timing in `rows_s` to decide whether the home card is fast enough. At batch 128, 20,000 updates make 2.56 million training presentations. Divide that count by measured rows/s to estimate seconds. These step counts are pilot and starting budgets; playing strength requires separate evaluation.
+
+## Play through UCI
+
+With the project dependencies and PyTorch installed, run either checkpoint format:
+
+```bash
+python uci.py student.pt
+python uci.py /path/to/trainer/workdir/latest.pt
+```
+
+The engine defaults to CPU with one PyTorch compute thread per instance. For a harness
+that accepts an executable path, activate the project environment, place the distilled
+checkpoint at `student.pt` next to `uci.py`, and pass the executable `uci.py`.
+If needed, run `chmod +x uci.py` first. For a GUI that accepts a command and arguments,
+use the project's Python executable with absolute paths to the script and checkpoint.
+Use `--device cuda` to select a GPU or `--threads N` to change the CPU thread budget.
+For an existing checkout matching this snapshot, copying just `uci.py` and
+`inference.py` is enough to launch the UCI engine.
+
+Send `uci` and wait for `uciok`, then send `isready` and wait for `readyok` to
+allow time for checkpoint loading. For example, send `position startpos moves e2e4`
+followed by `go wtime 60000 btime 45000` to play Black. The engine emits a completed
+root visit count and one `bestmove` per finished search. It accepts six-field FENs,
+move history, `ucinewgame`, `go movetime`, per-side clocks and increments,
+`movestogo`, `go nodes`, `go infinite`, `stop` and `quit`. Bare `go` searches until stopped.
+
+A separate process owns PyTorch. For each new position the controller starts with
+a legal move. After the first network evaluation the worker publishes the root's
+highest-prior move. After each completed simulation it publishes the most-visited
+root move. A monotonic deadline or a `stop` command returns the current choice
+without waiting for an in-flight evaluation. Results carry a search ID so the
+last evaluation of an old position cannot overwrite the next move. With no legal
+moves the engine returns `bestmove 0000`.
+
+For clocks, the gross budget is the side's remaining time divided by `movestogo`
+(default 30), plus 80% of its increment, capped at the remaining clock.
+An explicit `movetime` sets the gross budget directly. The engine subtracts a
+scheduling/output reserve of 10%, clamped to 2–30 ms, flooring the result at
+zero. The OS still needs to schedule the protocol process to deliver the reply.
+
+Run `python test_uci.py` to check the real UCI subprocess with random teacher
+and student weights and to exercise cancellation during a blocked forward pass.
 
 ## Local checks
 
