@@ -3,6 +3,7 @@
 
 import argparse
 import shlex
+import sys
 from contextlib import ExitStack
 
 import chess
@@ -17,6 +18,23 @@ def positive_int(value):
     return n
 
 
+def set_elo(engine, name, elo):
+    options = {"UCI_LimitStrength": True, "UCI_Elo": elo}
+    # Validate both options before enabling limited strength.
+    for key, value in options.items():
+        if key not in engine.options:
+            print(f"{name}: skipping Elo {elo}; engine lacks {key}", file=sys.stderr)
+            return
+        try:
+            engine.options[key].parse(value)
+        except chess.engine.EngineError as error:
+            print(f"{name}: skipping Elo {elo}; {error}", file=sys.stderr)
+            return
+
+    engine.configure(options)
+    engine.ping()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Play a match between two UCI engines."
@@ -26,6 +44,8 @@ def main():
     parser.add_argument("--beta", required=True)
     parser.add_argument("--alpha-time", required=True, type=positive_int)
     parser.add_argument("--beta-time", required=True, type=positive_int)
+    parser.add_argument("--alpha-elo", type=int, help="Requested UCI Elo for Alpha")
+    parser.add_argument("--beta-elo", type=int, help="Requested UCI Elo for Beta")
     parser.add_argument("--games", type=positive_int, default=1)
     parser.add_argument("--pgn", default="match.pgn")
 
@@ -41,6 +61,7 @@ def main():
         "Beta": args.beta_time,
     }
 
+    elos = {"Alpha": args.alpha_elo, "Beta": args.beta_elo}
     scores = {"Alpha": 0.0, "Beta": 0.0}
 
     with ExitStack() as stack:
@@ -55,6 +76,8 @@ def main():
             )
 
             stack.callback(engine.close)
+            if elos[name] is not None:
+                set_elo(engine, name, elos[name])
             engines[name] = engine
 
             print(
